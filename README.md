@@ -2,8 +2,8 @@ TODO:
 ```
 [ ] Go over directories, clean them up + add READMEs  
     [ ] prep_data  
-    [ ] results_feature_selection  
-    [ ] scripts_analysis  
+    [ x] data (contains the LLM and original dataset and the human annotation data (+ the full potato configuration which includes all instructions, consent form etc)
+    [ x] feature analysis (contains also all results)
     [ ] update_original_corpus  
     [ ] top-level  
 [ ] Make repository public  
