@@ -9,6 +9,13 @@ from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
 from sklearn.pipeline import make_pipeline, Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
+from scipy.stats import loguniform
 
 
 # ---------------------------------------------------------------------
@@ -75,221 +82,9 @@ def get_clean_feature_df(feature_df, features):
     return df
 
 
-def robust_feature_selection(X, y, N_OUTER=10, N_INNER=5, SEED=42):
-    """
-    Perform robust feature selection using nested cross-validation with Elastic Net logistic regression.
-    Store the averaged coefficients and selection frequencies of features.
-    Store the average R2 and AUC across outer folds.
-    """
-    features = X.columns.tolist()
-    mcfadden_scores, nagelkerke_scores, auc_scores = [], [], []
-    feature_counts = pd.Series(0, index=features)
-    coef_sums = pd.Series(0.0, index=features)
-
-    outer_cv = StratifiedKFold(n_splits=N_OUTER, shuffle=True, random_state=SEED)
-
-    # parameter grid
-    Cs = np.logspace(-2, 4, 20)
-    l1_ratios = np.linspace(0, 0.25, 3)
-    param_grid = {
-        "logreg__C": Cs,
-        "logreg__l1_ratio": l1_ratios
-    }
-    for outer_train_idx, outer_test_idx in tqdm(outer_cv.split(X, y), total=N_OUTER, desc="Outer CV"):
-        X_train, X_test = X.iloc[outer_train_idx], X.iloc[outer_test_idx]
-        y_train, y_test = y.iloc[outer_train_idx], y.iloc[outer_test_idx]
-
-        # Define pipeline (scaling inside)
-        pipeline = Pipeline([
-            ('scaler', StandardScaler()),
-            ('logreg', LogisticRegression(
-                penalty="elasticnet",
-                solver="saga",
-                max_iter=1000,
-                tol=1e-3,
-                random_state=SEED
-            ))
-        ])
-
-        # Inner CV for hyperparameter tuning
-        inner_cv = StratifiedKFold(n_splits=N_INNER, shuffle=True, random_state=SEED)
-        grid = GridSearchCV(
-            estimator=pipeline,
-            param_grid=param_grid,
-            cv=inner_cv,
-            scoring="explained_variance",
-            n_jobs=-1,
-            verbose=1
-        )
-        grid.fit(X_train, y_train)
-
-        best_model = grid.best_estimator_
-
-        # --- Performance on outer test set ---
-        y_pred_proba = best_model.predict_proba(X_test)[:, 1]
-        auc = roc_auc_score(y_test, y_pred_proba)
-        auc_scores.append(auc)
-
-        r2_mcf, r2_nag = pseudo_r2_measures(y_test, y_pred_proba)
-        mcfadden_scores.append(r2_mcf)
-        nagelkerke_scores.append(r2_nag)
-
-        # --- Track features ---
-        # --- Extract coefficients correctly ---
-        logreg_step = best_model.named_steps["logreg"]
-        coefs = logreg_step.coef_.flatten()
-        print("coefficients of the best model in this fold:")
-        print(pd.Series(coefs, index=features).sort_values(ascending=False).head(10))
-
-        for feat, coef in zip(features, coefs):
-            if coef != 0:
-                feature_counts[feat] += 1
-                coef_sums[feat] += coef
-
-    print("\n=== Nested CV Results ===")
-    print(f"Mean AUC: {np.mean(auc_scores):.3f} ± {np.std(auc_scores):.3f}")
-    print(f"Mean McFadden R²: {np.mean(mcfadden_scores):.3f} ± {np.std(mcfadden_scores):.3f}")
-    print(f"Mean Nagelkerke R²: {np.mean(nagelkerke_scores):.3f} ± {np.std(nagelkerke_scores):.3f}")
-
-    selection_freq = feature_counts / N_OUTER
-    avg_coefs = coef_sums / feature_counts.replace(0, np.nan)
-
-    summary = (
-        pd.DataFrame({"Selection_Freq": selection_freq, "Avg_Coef": avg_coefs})
-        .fillna(0)
-        .sort_values("Selection_Freq", ascending=False)
-    )
-    print("\n=== Feature Stability Summary ===")
-    print(summary.head(20))
-    summary.to_csv("feature_stability.csv", index=True)
 
 
-"""
-def robust_feature_selection_fast(X, y, N_OUTER=10, N_INNER=5, SEED=42, n_iter_search=10):
-    
-    Faster robust feature selection using nested cross-validation
-    with Elastic Net logistic regression and RandomizedSearchCV.
-    Stores averaged coefficients and selection frequencies of features,
-    as well as average R² (McFadden & Nagelkerke) and AUC across outer folds.
-    
-
-    features = X.columns.tolist()
-    mcfadden_scores, nagelkerke_scores, auc_scores = [], [], []
-    feature_counts = pd.Series(0, index=features)
-    coef_sums = pd.Series(0.0, index=features)
-
-    outer_cv = StratifiedKFold(n_splits=N_OUTER, shuffle=True, random_state=SEED)
-
-    # --- Parameter ranges ---
-    # Cs = np.logspace(-2, 3, 50)          # broader range for regularization
-    # l1_ratios = np.linspace(0, 1, 20)    # full elastic net range
-    # l1_ratios = np.linspace(0.1, 1.0, 10)
-    # Cs = np.logspace(-4, 3, 30)
-    Cs = np.logspace(-3, 2, 15)  # 0.001 to 100
-    l1_ratios = np.linspace(0.1, 1.0, 10)
-    param_dist = {
-        "logreg__C": Cs,
-        "logreg__l1_ratio": l1_ratios
-    }
-
-    # --- Inner CV setup ---
-    inner_cv = StratifiedKFold(n_splits=N_INNER, shuffle=True, random_state=SEED)
-
-    for outer_train_idx, outer_test_idx in tqdm(outer_cv.split(X, y), total=N_OUTER, desc="Outer CV"):
-        X_train, X_test = X.iloc[outer_train_idx], X.iloc[outer_test_idx]
-        y_train, y_test = y.iloc[outer_train_idx], y.iloc[outer_test_idx]
-
-        pipeline = Pipeline([
-            ('scaler', StandardScaler()),
-            ('logreg', LogisticRegression(
-                penalty="elasticnet",
-                solver="saga",
-                max_iter=2000,
-                tol=1e-3,
-                random_state=SEED
-            ))
-        ])
-
-        # --- Randomized Search instead of Grid Search ---
-        search = RandomizedSearchCV(
-            estimator=pipeline,
-            param_distributions=param_dist,
-            n_iter=n_iter_search,  # number of random combinations
-            cv=inner_cv,
-            scoring="roc_auc",
-            random_state=SEED,
-            n_jobs=-1,
-            verbose=0
-        )
-        search.fit(X_train, y_train)
-        best_model = search.best_estimator_
-
-        # --- Evaluate outer test performance ---
-        y_pred_proba = best_model.predict_proba(X_test)[:, 1]
-        auc = roc_auc_score(y_test, y_pred_proba)
-        auc_scores.append(auc)
-
-        # --- Compute pseudo R² manually (same as before) ---
-        eps = 1e-15
-        y_pred_proba = np.clip(y_pred_proba, eps, 1 - eps)
-        logL_model = np.sum(y_test * np.log(y_pred_proba) + (1 - y_test) * np.log(1 - y_pred_proba))
-        p_mean = np.mean(y_test)
-        logL_null = np.sum(y_test * np.log(p_mean) + (1 - y_test) * np.log(1 - p_mean))
-        mcfadden = 1 - (logL_model / logL_null)
-        nagelkerke = mcfadden / (1 - (logL_null / len(y_test)))
-        mcfadden_scores.append(mcfadden)
-        nagelkerke_scores.append(nagelkerke)
-
-        # --- Track feature selection and coefficients ---
-        coefs = best_model.named_steps["logreg"].coef_.flatten()
-        selected = coefs != 0
-        feature_counts[selected] += 1
-        coef_sums[selected] += coefs[selected]
-
-        # --- Per-fold results logging ---
-        results_df = pd.DataFrame({
-            "Fold_AUC": [auc] * len(features),
-            "Fold_McFadden_R2": [mcfadden] * len(features),
-            "Fold_Nagelkerke_R2": [nagelkerke] * len(features)
-        })
-
-        # Save them for later inspection
-        results_df.to_csv("per_fold_results.csv", index=False)
-
-    # --- Aggregate summary ---
-    print("\n=== Nested CV Results ===")
-    print(f"Mean AUC: {np.mean(auc_scores):.3f} ± {np.std(auc_scores):.3f}")
-    print(f"Mean McFadden R²: {np.mean(mcfadden_scores):.3f} ± {np.std(mcfadden_scores):.3f}")
-    print(f"Mean Nagelkerke R²: {np.mean(nagelkerke_scores):.3f} ± {np.std(nagelkerke_scores):.3f}")
-    # store also the results in a dataframe
-    results_df = pd.DataFrame({
-        "Metric": ["AUC", "McFadden_R2", "Nagelkerke_R2"],
-        "Mean": [np.mean(auc_scores), np.mean(mcfadden_scores), np.mean(nagelkerke_scores)],
-        "Std": [np.std(auc_scores), np.std(mcfadden_scores), np.std(nagelkerke_scores)]
-    })
-    results_df.to_csv("nested_cv_summary.csv", index=False)
-
-    # --- Feature summary ---
-    selection_freq = feature_counts / N_OUTER
-    avg_coefs = coef_sums / feature_counts.replace(0, np.nan)
-    summary = (
-        pd.DataFrame({"Selection_Freq": selection_freq, "Avg_Coef": avg_coefs})
-        .fillna(0)
-        .sort_values("Selection_Freq", ascending=False)
-    )
-
-    print("\n=== Top Stable Features ===")
-    print(summary.head(15))
-
-    # Save feature stability summary
-    summary.to_csv("feature_stability_fast.csv", index=True)
-
-    # --- Return both summaries ---
-    return summary, results_df
-    """
-
-
-def robust_feature_selection_enhanced(
+def robust_feature_selection(
     X, y,
     N_OUTER=10, N_INNER=5,
     SEED=42, n_iter_search=20,
@@ -304,20 +99,12 @@ def robust_feature_selection_enhanced(
       - Bootstrapped confidence intervals & p-values
       - Saves all outputs to CSV
     """
-    import numpy as np
-    import pandas as pd
-    from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.pipeline import Pipeline
-    from sklearn.metrics import roc_auc_score
-    from tqdm import tqdm
-    from scipy.stats import loguniform
 
+    # set random seed to ensure reproducibility
     np.random.seed(SEED)
     features = X.columns.tolist()
 
-    # --- Containers ---
+    # --- Containers to store feature information---
     feature_counts = pd.Series(0, index=features)
     coef_sums = pd.Series(0.0, index=features)
     sign_consistency = pd.Series(0, index=features)
@@ -325,7 +112,7 @@ def robust_feature_selection_enhanced(
 
     outer_cv = StratifiedKFold(n_splits=N_OUTER, shuffle=True, random_state=SEED)
     inner_cv = StratifiedKFold(n_splits=N_INNER, shuffle=True, random_state=SEED)
-
+    # define parameter distribution for RandomizedSearchCV
     param_dist = {
         "logreg__C": loguniform(1e-4, 1),
         "logreg__l1_ratio": np.linspace(0.7, 1.0, 6)
@@ -338,6 +125,7 @@ def robust_feature_selection_enhanced(
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
+        # scale features and fit Elastic Net Logistic Regression with RandomizedSearchCV
         pipeline = Pipeline([
             ("scaler", StandardScaler()),
             ("logreg", LogisticRegression(
@@ -345,25 +133,30 @@ def robust_feature_selection_enhanced(
                 max_iter=3000, tol=1e-4, random_state=SEED
             ))
         ])
-
+        # define the search object with the parameter distribution and inner CV, using AUC as the scoring metric
         search = RandomizedSearchCV(
             pipeline, param_distributions=param_dist,
             n_iter=n_iter_search, cv=inner_cv, scoring="roc_auc",
             random_state=SEED, n_jobs=-1, verbose=0
         )
-
+        # fit the model and get the best estimator
         search.fit(X_train, y_train)
         best_model = search.best_estimator_
+        # extract coefficients and compute AUC on the test set
         coefs = best_model.named_steps["logreg"].coef_.flatten()
         y_pred_proba = best_model.predict_proba(X_test)[:, 1]
         auc = roc_auc_score(y_test, y_pred_proba)
 
         # Track results
+        # 1) only consider features with non-zero coefficients as selected
         selected = coefs != 0
+        # 2) if a feature was selected, update its count for that split
         feature_counts[selected] += 1
+        # add the standardized coefficient to the sum for that feature (for averaging later)
         coef_sums[selected] += coefs[selected]
+        # add the sign of the coefficient to the sign consistency tracker (for averaging later)
         sign_consistency += np.sign(coefs)
-
+        # store per-fold result.
         per_fold_results.append({
             "Fold": fold + 1,
             "AUC": auc,
@@ -373,9 +166,11 @@ def robust_feature_selection_enhanced(
 
     # === Aggregate results ===
     selection_freq = feature_counts / N_OUTER
+    # average the coefficients, we want features with consistently large coefficients across folds.
     avg_coefs = coef_sums / feature_counts.replace(0, np.nan)
+    # average the sign consistency. We do not want features that flip signs across folds.
     sign_consistency = np.abs(sign_consistency / N_OUTER)
-
+    # we sort the features by selection frequency.
     feature_summary = (
         pd.DataFrame({
             "Selection_Freq": selection_freq,
@@ -391,7 +186,7 @@ def robust_feature_selection_enhanced(
     # === Bootstrap for CIs & p-values ===
     print("\nBootstrapping coefficient confidence intervals...")
     from joblib import Parallel, delayed
-
+    # now we still need an idea of the significance of the features. we estimate bootstrapped confidence intervals and p-values for the coefficients.
     def fit_bootstrap(seed):
         np.random.seed(seed)
         idx = np.random.choice(len(y), len(y), replace=True)
@@ -418,7 +213,7 @@ def robust_feature_selection_enhanced(
         np.mean(coef_boot > 0, axis=0),
         np.mean(coef_boot < 0, axis=0)
     )
-
+    # we add this information to the feature summary dataframe.
     feature_summary["CI_Lower"] = ci_lower
     feature_summary["CI_Upper"] = ci_upper
     feature_summary["p_approx"] = p_values
@@ -475,6 +270,7 @@ def find_highly_correlated_features(df1, df2, drop_cols=None, threshold=0.9):
 def main(args):
     df1 = pl.read_parquet(args.input_t1).to_pandas()
     df2 = pl.read_parquet(args.input_t2).to_pandas()
+    # our initial set of features (after correlation analysis these are the ones we will keep for the robust feature selection)
     features = ['n_VERB_VerbForm_Fin',
                 'n_VERB_VerbForm_Inf',
                 'n_VERB_VerbForm_Part',
@@ -620,8 +416,7 @@ def main(args):
                 'n_fac',
                 'n_law',
                 'n_language']
-    # df1 = df1.sample(30000)
-    # df2 = df2.sample(30000)
+
     print("size of T1 dataframe: ", df1.shape)
     print("size of T2 dataframe: ", df2.shape)
     print("type of T1 dataframe: ", type(df1))
@@ -668,7 +463,7 @@ def main(args):
     print("Column lengths:")
     print(lengths.value_counts())
 
-    robust_feature_selection_enhanced(feature_df, target, N_OUTER=args.outer, N_INNER=args.inner, SEED=args.seed)
+    robust_feature_selection(feature_df, target, N_OUTER=args.outer, N_INNER=args.inner, SEED=args.seed)
 
 
 if __name__ == "__main__":
