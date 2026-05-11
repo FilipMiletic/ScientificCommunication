@@ -7,9 +7,20 @@ This folder contains the corpus of LLM-Assisted Paraphases. There are two files:
 The files contain the feature values of the originally selected 145 features, the original, human-written text (*text*) and in case of gpt_sample_features.csv, the paraphase (*improved_text*)
 
 ### original
-This folder contains the original data used for the analysis. There are two files:
+This directory contains the original data used for our analyses. 
+There are two files containing the raw corpus data, i.e., metadata and full text
+of papers obtained by updating the ACL-OCL corpus:
+- cacl_t1.parquet: papers from t1 (time period before release of chatGPT)
+- cacl_t2.parquet: papers from t2 (time period after release of chatGPT)
+
+Derived versions of the dataset used for our analyses (e.g., lemmatized data, five-sentence windows) 
+can be obtained by running the scripts in directory `prep_data` over these files.
+
+This directory also contains two files related to the regression analysis:
 - cacl_t1_reliable_features.parquet: contains the data of the 24 final features for the realistic dataset (cacl_t1). --> t1 = time period before release of chatGPT 
 - cacl_t2_reliable_features.parquet: contains the data of the 24 final features for the synthetic dataset (cacl_t2). --> t2 = time period after release of chatGPT
+
+For input data used in the lexical analysis, see directory `lexical analysis`.
 
 ### Human Annotation
 
