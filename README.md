@@ -2,7 +2,7 @@
 
 This repository contains the code for the following paper:
 
-> Filip Miletić \& Neele Falk. **What are LLMs doing to scientific communication? Measuring changes in writing practices and reading experience.** To appear in *Proceedings of the 15th Conference on Language Resources and Evaluation (LREC 2026)*, Palma de Mallorca, Spain.
+> Filip Miletić \& Neele Falk. **What are LLMs doing to scientific communication? Measuring changes in writing practices and reading experience.** In *Proceedings of the 15th Conference on Language Resources and Evaluation (LREC 2026)*, Palma de Mallorca, Spain. <https://doi.org/10.63317/3ai7wig4fhd8>
 
 Below, we provide a general overview of this repository. Each subdirectory
 additionally contains a readme file with more detailed information.
